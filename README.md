@@ -46,7 +46,7 @@ Usage (both):
 2. Set the benchmark for criterion #3 in the settings (e.g. `CME_MINI:ES1!` or `AMEX:SPY`); in the levels edition also tick **Use benchmark filter**.
 3. **Alerts**: create one alert on the indicator with *"Any alert() function call"* to get the full dynamic message at every stage transition, or use the four `alertcondition()` entries (climax warning / vicious drop / confirmed / reset) for single-stage alerts.
 
-Notes: both state machines advance on **confirmed bars only** — signals never repaint; what fired historically is what would have fired live. (The levels edition's *projected channel line* is a live drawing refreshed on the current bar — cosmetic only, it doesn't affect signals.) TradingView recomputes state from chart history on load, so there is no state file (the Python version persists state across restarts instead).
+Notes: both state machines advance on **confirmed bars only** — signals never repaint; what fired historically is what would have fired live. (The levels edition's *projected channel line* and *scenario ghost* are live drawings refreshed on the current bar — cosmetic only, they don't affect signals.) TradingView recomputes state from chart history on load, so there is no state file (the Python version persists state across restarts instead).
 
 ## Install (Python detector)
 

@@ -368,8 +368,8 @@ if barstate.islast
     if showGhost and ready
         pts = array.new<chart.point>()
         array.push(pts, f_pt(0, close))
-        if state <= 1 and chSlope > 0
-            // full template: staircase -> parabolic -> vicious drop -> weak bounce -> fade
+        if state == 1 and chSlope > 0
+            // full template (only once #1 has fired): staircase -> parabolic -> vicious drop -> weak bounce -> fade
             aEnd = math.round(ghostBars * 0.40)
             array.push(pts, f_pt(aEnd, midNow + chSlope * aEnd + 0.3 * (upperNow - midNow)))
             bEnd = math.round(ghostBars * 0.55)
