@@ -247,14 +247,17 @@ if array.size(resP) > 0
 
 // ≈ETA assuming a continuous stream of bars (sessions/weekends push it later)
 f_eta(int offBars) =>
-    str.format_time(time_close + offBars * timeframe.in_seconds() * 1000, "MMM dd HH:mm", syminfo.timezone)
+    tfs = timeframe.in_seconds()
+    na(tfs) ? "" : str.format_time(time_close + offBars * tfs * 1000, "MMM dd HH:mm", syminfo.timezone)
 
 f_etaTo(float y) =>   // ETA to a level at the measured wave speed
     string out = ""
     if not na(waveSpeed) and waveSpeed > 0
         b = math.round(math.abs(y - close) / waveSpeed)
         if b > 0 and b <= 480
-            out := " · ≈" + f_eta(b)
+            e = f_eta(b)
+            if e != ""
+                out := " · ≈" + e
     out
 
 // ---------------------------------------------------------------- state machine
@@ -467,7 +470,7 @@ if barstate.islast
     if showWatch and ready
         if state == 1 and chSlope > 0
             trigY = upperNow + chBreakATR * atr
-            f_note(trigY, color.orange, "↑ close here + RSI≥" + str.tostring(rsiClimax, "#") + " + vol spike = CLIMAX" + f_etaTo(trigY))
+            f_watch(trigY, color.orange, "↑ close here + RSI≥" + str.tostring(rsiClimax, "#") + " + vol spike = CLIMAX" + f_etaTo(trigY))
             f_watch(midNow, color.gray, "↓ lose midline = momentum cooling")
             f_watch(trendFail, color.maroon, "↓ close below = retrace > " + str.tostring(maxRetrIn * 100, "#.#") + "% — #1 dies, pattern OFF" + f_etaTo(trendFail))
         else if state == 2
@@ -537,7 +540,8 @@ f_scenario(array<float> fracs, array<float> prices, color col, string name) =>
         array.push(ghosts, polyline.new(pts, curved = true, closed = false, line_color = col, line_style = line.style_dashed, line_width = 2))
         endOff = math.round(ghostBars * array.get(fracs, array.size(fracs) - 1))
         endP   = array.get(prices, array.size(prices) - 1)
-        array.push(ghostLbls, label.new(bar_index + endOff, endP, name + (showEta ? "\n≈ " + f_eta(endOff) : ""), style = label.style_label_left, color = color.new(col, 75), textcolor = col, size = size.small))
+        etaTxt = showEta ? f_eta(endOff) : ""
+        array.push(ghostLbls, label.new(bar_index + endOff, endP, name + (etaTxt != "" ? "\n≈ " + etaTxt : ""), style = label.style_label_left, color = color.new(col, 75), textcolor = col, size = size.small))
 
 if barstate.islast
     while array.size(ghosts) > 0
