@@ -251,7 +251,7 @@ if barstate.islast
 
 // TOP / LOW + retracement levels after the drop, projected right and kept in
 // sync while the structure evolves (new lows during BOUNCE_WATCH move the
-// 50% / 78.6% levels too).
+// weak-bounce ceiling and invalidation levels too).
 var line  pkLine = na
 var line  loLine = na
 var line  l50    = na
