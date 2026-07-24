@@ -362,13 +362,14 @@ var ghostLbls = array.new<label>()
 
 // build one scenario path: offsets are fractions of the horizon, prices absolute
 f_scenario(array<float> fracs, array<float> prices, color col, string name) =>
-    pts = array.new<chart.point>()
-    array.push(pts, chart.point.from_index(bar_index, close))
-    for i = 0 to array.size(fracs) - 1
-        array.push(pts, chart.point.from_index(bar_index + math.round(ghostBars * array.get(fracs, i)), array.get(prices, i)))
-    array.push(ghosts, polyline.new(pts, curved = true, closed = false, line_color = col, line_style = line.style_dashed, line_width = 2))
-    endP = array.get(prices, array.size(prices) - 1)
-    array.push(ghostLbls, label.new(bar_index + ghostBars, endP, name, style = label.style_label_left, color = color.new(col, 75), textcolor = col, size = size.small))
+    if array.size(fracs) > 0 and array.size(fracs) == array.size(prices)
+        pts = array.new<chart.point>()
+        array.push(pts, chart.point.from_index(bar_index, close))
+        for i = 0 to array.size(fracs) - 1
+            array.push(pts, chart.point.from_index(bar_index + math.round(ghostBars * array.get(fracs, i)), array.get(prices, i)))
+        array.push(ghosts, polyline.new(pts, curved = true, closed = false, line_color = col, line_style = line.style_dashed, line_width = 2))
+        endP = array.get(prices, array.size(prices) - 1)
+        array.push(ghostLbls, label.new(bar_index + ghostBars, endP, name, style = label.style_label_left, color = color.new(col, 75), textcolor = col, size = size.small))
 
 if barstate.islast
     while array.size(ghosts) > 0
