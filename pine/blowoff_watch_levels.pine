@@ -13,11 +13,10 @@
 // track the structure live as new extremes print. Invalidated patterns are
 // wiped off the chart; confirmed blow-offs stay as a frozen record.
 //
-// Optional "scenario ghost": a dashed template of how the pattern typically
-// plays out from the current state, projected forward. NOT a forecast — a
-// map of the sequence and where the next decision levels sit. A red "bear
-// twin" shows the DOWN path: in UPTREND the no-climax rollover to the level
-// where criterion #1 dies; in CLIMAX the top-already-in drop completion.
+// Optional "scenario fan": three dashed templates per state — ① the pattern
+// path, ② the bullish alternative, ③ the bearish alternative — projected
+// forward. NOT forecasts: maps of where the scenarios diverge and where
+// the decision levels sit.
 //
 // The state machine advances on CONFIRMED bars only — no intrabar repaint.
 // Alerts: one "Any alert() function call" alert gets dynamic messages at every
@@ -348,100 +347,79 @@ if barstate.islast
     table.cell(t, 0, 5, "#5 bounce", text_color = color.gray, text_size = size.tiny)
     table.cell(t, 1, 5, na(dispRetr) ? "-" : "retr " + str.tostring(dispRetr, "#.##") + (weakVol ? " weak vol" : ""), text_color = color.silver, text_size = size.tiny)
 
-// ---------------------------------------------------------------- scenario ("ghost") projection
-// Projects the TEMPLATE of the blow-off pattern forward from the current
-// state. This is NOT a forecast — it shows how the pattern typically plays
-// out IF it completes, so you can see where you are in the sequence and
-// where the next decision levels sit.
+// ---------------------------------------------------------------- scenario ("fan") projection
+// Projects TEMPLATES of possible outcomes forward from the current state.
+// These are NOT forecasts — each path shows one typical way the situation
+// resolves, so you can see where the scenarios diverge and where the
+// decision levels sit. ① = pattern path, ② = bullish alt, ③ = bearish alt.
 
 grpP = "Scenario projection"
-showGhost = input.bool(true, "Draw pattern scenario forward", group = grpP)
-showBear  = input.bool(true, "Also draw breakdown scenario (bear)", group = grpP)
+showGhost = input.bool(true, "Draw scenario fan forward", group = grpP)
 ghostBars = input.int(100, "Projection horizon (bars)", minval = 20, maxval = 400, group = grpP)
 
-f_pt(int off, float p) =>
-    chart.point.from_index(bar_index + off, p)
+var ghosts    = array.new<polyline>()
+var ghostLbls = array.new<label>()
 
-var polyline ghost        = na
-var label    ghostLbl     = na
-var polyline ghostBear    = na
-var label    ghostBearLbl = na
+// build one scenario path: offsets are fractions of the horizon, prices absolute
+f_scenario(array<float> fracs, array<float> prices, color col, string name) =>
+    pts = array.new<chart.point>()
+    array.push(pts, chart.point.from_index(bar_index, close))
+    for i = 0 to array.size(fracs) - 1
+        array.push(pts, chart.point.from_index(bar_index + math.round(ghostBars * array.get(fracs, i)), array.get(prices, i)))
+    array.push(ghosts, polyline.new(pts, curved = true, closed = false, line_color = col, line_style = line.style_dashed, line_width = 2))
+    endP = array.get(prices, array.size(prices) - 1)
+    array.push(ghostLbls, label.new(bar_index + ghostBars, endP, name, style = label.style_label_left, color = color.new(col, 75), textcolor = col, size = size.small))
 
 if barstate.islast
-    polyline.delete(ghost)
-    label.delete(ghostLbl)
-    polyline.delete(ghostBear)
-    label.delete(ghostBearLbl)
+    while array.size(ghosts) > 0
+        polyline.delete(array.pop(ghosts))
+    while array.size(ghostLbls) > 0
+        label.delete(array.pop(ghostLbls))
     if showGhost and ready
-        pts = array.new<chart.point>()
-        array.push(pts, f_pt(0, close))
+        cGrey = color.new(color.gray,   25)   // primary pattern template
+        cBull = color.new(color.teal,   35)   // bullish alternative
+        cBear = color.new(color.maroon, 25)   // bearish alternative
         if state == 1 and chSlope > 0
-            // full template (only once #1 has fired): staircase -> parabolic -> vicious drop -> weak bounce -> fade
-            aEnd = math.round(ghostBars * 0.40)
-            array.push(pts, f_pt(aEnd, midNow + chSlope * aEnd + 0.3 * (upperNow - midNow)))
-            bEnd = math.round(ghostBars * 0.55)
-            pkP  = upperNow + chSlope * bEnd + (chBreakATR + 1.5) * atr
-            array.push(pts, f_pt(bEnd, pkP))
-            cEnd = math.round(ghostBars * 0.70)
-            loP  = pkP - dropATRIn * 1.2 * atr
-            array.push(pts, f_pt(cEnd, loP))
-            array.push(pts, f_pt(math.round(ghostBars * 0.85), loP + maxBounce * 0.9 * (pkP - loP)))
-            array.push(pts, f_pt(ghostBars, loP - 0.5 * atr))
-        else if state == 2
-            // climax already live: one more spike, then the drop template
-            bEnd = math.round(ghostBars * 0.20)
-            pkP  = math.max(close, upperNow) + 1.5 * atr
-            array.push(pts, f_pt(bEnd, pkP))
-            cEnd = math.round(ghostBars * 0.45)
-            loP  = pkP - dropATRIn * 1.2 * atr
-            array.push(pts, f_pt(cEnd, loP))
-            array.push(pts, f_pt(math.round(ghostBars * 0.70), loP + maxBounce * 0.9 * (pkP - loP)))
-            array.push(pts, f_pt(ghostBars, loP - 0.5 * atr))
-        else if state == 3 or state == 4
-            // drop happened: weak bounce toward the ceiling, then rollover
-            bounceCeil = lo + maxBounce * (pk - lo)
-            array.push(pts, f_pt(math.round(ghostBars * 0.35), math.min(bounceCeil, close + 1.5 * atr)))
-            array.push(pts, f_pt(math.round(ghostBars * 0.70), lo))
-            array.push(pts, f_pt(ghostBars, lo - 1.0 * atr))
-        else if state == 5
-            // confirmed: dead-cat fades, drift below the low
-            array.push(pts, f_pt(math.round(ghostBars * 0.30), close + 0.5 * atr))
-            array.push(pts, f_pt(math.round(ghostBars * 0.65), lo))
-            array.push(pts, f_pt(ghostBars, lo - 1.5 * atr))
-        if array.size(pts) > 1
-            ghost := polyline.new(pts, curved = true, closed = false, line_color = color.new(color.gray, 30), line_style = line.style_dashed, line_width = 2)
-            lastP = array.get(pts, array.size(pts) - 1)
-            ghostLbl := label.new(bar_index + ghostBars, lastP.price, "pattern scenario\n(template, not a forecast)", style = label.style_label_left, color = color.new(color.gray, 75), textcolor = color.silver, size = size.small)
-    // Bear twin: what the DOWN path from here means for the pattern.
-    if showBear and ready and (state == 1 or state == 2)
-        adv = trendHi - trendLo
-        if adv > 0
-            failLevel = trendHi - maxRetrIn * adv   // pullback this deep kills criterion #1
-            halfLevel = trendHi - 0.5 * adv
-            pts2 = array.new<chart.point>()
-            array.push(pts2, f_pt(0, close))
-            if state == 1
-                // no climax, just a rollover: slide to the 50% retrace of the
-                // anchored advance, then to the disqualification level
+            // ① blow-off template: toward the channel top -> parabolic -> crash -> weak bounce
+            pkP = upperNow + chSlope * ghostBars * 0.55 + (chBreakATR + 1.5) * atr
+            loP = pkP - dropATRIn * 1.2 * atr
+            f_scenario(array.from(0.40, 0.55, 0.70, 0.85, 1.0), array.from(midNow + chSlope * ghostBars * 0.40 + 0.3 * (upperNow - midNow), pkP, loP, loP + maxBounce * 0.9 * (pkP - loP), loP - 0.5 * atr), cGrey, "① blow-off template")
+            // ② orderly continuation: grinds along the channel, no climax
+            f_scenario(array.from(0.33, 0.66, 1.0), array.from(midNow + chSlope * ghostBars * 0.33 - 0.5 * atr, midNow + chSlope * ghostBars * 0.66 + 0.5 * atr, midNow + chSlope * ghostBars), cBull, "② staircase continues")
+            // ③ breakdown: no climax, the pullback deepens until criterion #1 dies
+            adv = trendHi - trendLo
+            if adv > 0
+                failLevel = trendHi - maxRetrIn * adv
+                halfLevel = trendHi - 0.5 * adv
                 y1 = math.min(close - 0.5 * atr, halfLevel + 0.15 * adv)
                 y2 = math.min(y1, halfLevel)
                 y3 = math.min(y2, failLevel)
-                array.push(pts2, f_pt(math.round(ghostBars * 0.35), y1))
-                array.push(pts2, f_pt(math.round(ghostBars * 0.60), y2))
-                array.push(pts2, f_pt(math.round(ghostBars * 0.90), y3))
-                array.push(pts2, f_pt(ghostBars, y3 - 0.5 * atr))
-            else
-                // climax armed but no more upside: the top is already in,
-                // the vicious drop completes from the rolling peak
-                loP2 = dropPk - dropATRIn * 1.2 * atr
-                array.push(pts2, f_pt(math.round(ghostBars * 0.25), loP2))
-                array.push(pts2, f_pt(math.round(ghostBars * 0.50), loP2 + maxBounce * 0.9 * (dropPk - loP2)))
-                array.push(pts2, f_pt(ghostBars, loP2 - 0.5 * atr))
-            if array.size(pts2) > 1
-                ghostBear := polyline.new(pts2, curved = true, closed = false, line_color = color.new(color.red, 45), line_style = line.style_dashed, line_width = 2)
-                lastB = array.get(pts2, array.size(pts2) - 1)
-                bearTxt = state == 1 ? "breakdown scenario\n(#1 trend dies below " + str.tostring(failLevel, format.mintick) + ")" : "top-already-in scenario\n(vicious drop completes from the peak)"
-                ghostBearLbl := label.new(bar_index + ghostBars, lastB.price, bearTxt, style = label.style_label_left, color = color.new(color.red, 80), textcolor = color.new(color.red, 10), size = size.small)
+                f_scenario(array.from(0.35, 0.60, 1.0), array.from(y1, y2, y3), cBear, "③ breakdown — #1 dies < " + str.tostring(failLevel, format.mintick))
+        else if state == 2
+            pkP = math.max(close, upperNow) + 1.5 * atr
+            loP = pkP - dropATRIn * 1.2 * atr
+            // ① blow-off completes: one more spike, then the vicious drop
+            f_scenario(array.from(0.20, 0.45, 0.70, 1.0), array.from(pkP, loP, loP + maxBounce * 0.9 * (pkP - loP), loP - 0.5 * atr), cGrey, "① blow-off completes")
+            // ② squeeze continues — the classic trap for early shorts
+            f_scenario(array.from(0.35, 0.70, 1.0), array.from(close + 2.0 * atr, close + 3.5 * atr, close + 4.5 * atr), cBull, "② squeeze continues!")
+            // ③ fades back into the channel without a vicious drop
+            f_scenario(array.from(0.30, 1.0), array.from(midNow + chSlope * ghostBars * 0.30, midNow + chSlope * ghostBars - 1.0 * atr), cBear, "③ fades into channel")
+        else if (state == 3 or state == 4) and not na(pk) and not na(lo)
+            bounceCeil = lo + maxBounce * (pk - lo)
+            inval = lo + failRetr * (pk - lo)
+            // ① weak bounce toward the ceiling, then rollover (confirmation path)
+            f_scenario(array.from(0.35, 0.70, 1.0), array.from(math.min(bounceCeil, close + 1.5 * atr), lo, lo - 1.0 * atr), cGrey, "① weak bounce → down")
+            // ② reclaim -> invalidation (the "grind to new highs" trap)
+            f_scenario(array.from(0.40, 0.75, 1.0), array.from(bounceCeil, inval, pk), cBull, "② reclaims → invalid")
+            // ③ base building at the low
+            f_scenario(array.from(0.35, 0.70, 1.0), array.from(lo + 0.25 * (pk - lo), lo + 0.2 * (pk - lo), lo + 0.3 * (pk - lo)), cBear, "③ bases at the low")
+        else if state == 5 and not na(pk) and not na(lo)
+            // ① dead-cat fades below the low
+            f_scenario(array.from(0.30, 0.65, 1.0), array.from(close + 0.5 * atr, lo, lo - 1.5 * atr), cGrey, "① dead-cat fades")
+            // ② reclaim -> invalidation
+            f_scenario(array.from(0.45, 1.0), array.from(lo + 0.5 * (pk - lo), lo + failRetr * (pk - lo)), cBull, "② reclaims → invalid")
+            // ③ sharper flush
+            f_scenario(array.from(0.40, 1.0), array.from(lo - 1.0 * atr, lo - 2.5 * atr), cBear, "③ capitulation")
 
 // ---------------------------------------------------------------- alerts
 
