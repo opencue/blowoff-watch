@@ -1,0 +1,6 @@
+pandas>=2.0
+numpy>=1.24
+scipy>=1.10
+# Default data source (unofficial TradingView API — ToS grey zone, swappable):
+# swap fetch_data() for yfinance / Polygon / Databento / CCXT if preferred.
+tvdatafeed @ git+https://github.com/rongardF/tvdatafeed.git

@@ -1,0 +1,336 @@
+// blowoff-watch — Blow-off top / buying climax detector (Pine v6 port)
+// ---------------------------------------------------------------------
+// Live on-chart implementation of the 5-criteria state machine from
+// blowoff_detector.py, based on TradingSim's "5 Ways to Identify
+// Blow-Off Tops":
+//
+//   #1  Massive uptrend with no real pullbacks
+//   #2  Significant volume on the down move
+//   #3  The broad market / benchmark is also putting in a top
+//   #4  The pullback from the top is vicious
+//   #5  The counter-rally is weak
+//
+//   NEUTRAL -> UPTREND -> CLIMAX_WARNING -> VICIOUS_DROP -> BOUNCE_WATCH -> CONFIRMED
+//      ^                                                                       |
+//      +------------------------- reset ---------------------------------------+
+//
+// The state machine advances on CONFIRMED bars only (no intrabar repaint).
+// Wire alerts with "Any alert() function call", or use the four
+// alertcondition() entries.
+//
+// NOT financial advice. A detector is a warning system, not an entry button.
+//@version=6
+indicator("Blow-off Watch — 5-criteria state machine", shorttitle = "Blowoff Watch",
+     overlay = true, max_labels_count = 500, max_bars_back = 500)
+
+// ─── Inputs ─────────────────────────────────────────────────────────────────
+grpTrend = "#1 · Massive uptrend"
+trendLookback = input.int(300,    "Trend lookback (bars)",              minval = 60, maxval = 480, group = grpTrend)
+minGainAtr    = input.float(8.0,  "Min advance (ATR units)",            minval = 0.0,  group = grpTrend)
+minGainPct    = input.float(0.0,  "Min advance (%, 100 = +100%)",       minval = 0.0,  group = grpTrend, tooltip = "Optional %-based gate for stocks (article: 100–500%+). 0 = off.")
+maxRetrIn     = input.float(0.786, "Max pullback retracement",          minval = 0.1, maxval = 1.0, group = grpTrend)
+minR2         = input.float(0.70, "Min regression R² (orderly stairs)", minval = 0.0, maxval = 1.0, group = grpTrend)
+
+grpClimax = "Climax · parabolic push"
+chLookback   = input.int(120,    "Channel lookback (bars)",             minval = 30, maxval = 480, group = grpClimax)
+accelLen     = input.int(12,     "Local slope window",                  minval = 3,  group = grpClimax)
+accelRatioIn = input.float(2.5,  "Acceleration ratio (local/channel)",  group = grpClimax, tooltip = "Meme stocks: 4–5x")
+chBreakAtr   = input.float(1.0,  "Close above channel top (ATR)",       group = grpClimax)
+rsiClimaxIn  = input.float(75.0, "RSI climax threshold",                group = grpClimax)
+climaxVolZ   = input.float(2.0,  "Volume z-score spike",                group = grpClimax)
+climaxGrace  = input.int(40,     "Grace bars waiting for the drop",     group = grpClimax)
+
+grpDrop = "#2 + #4 · Vicious drop"
+dropWindow = input.int(16,    "Drop window (bars)",         minval = 3, group = grpDrop)
+viciousAtr = input.float(3.0, "Vicious drop size (ATR)",    group = grpDrop)
+downVolZ   = input.float(1.5, "Down-bar volume z-score",    group = grpDrop)
+
+grpBench = "#3 · Broad market topping (reported, not gating)"
+benchSym    = input.symbol("", "Benchmark symbol (blank = off)", group = grpBench, tooltip = "e.g. CME_MINI:ES1!, AMEX:SPY, AMEX:IWM")
+benchEmaLen = input.int(50,    "Benchmark EMA",                  group = grpBench)
+
+grpBounce = "#5 · Weak counter-rally"
+maxBounceRetr = input.float(0.50,  "Max bounce retrace (confirm)",     group = grpBounce)
+bounceVolZMax = input.float(0.0,   "Max mean bounce volume z-score",   group = grpBounce)
+bounceMinBars = input.int(3,       "Min bounce bars",       minval = 1, group = grpBounce)
+bounceTimeout = input.int(60,      "Bounce timeout (bars)",            group = grpBounce)
+failedRetr    = input.float(0.786, "Failed-pattern retrace (reset)",   group = grpBounce)
+
+grpInd = "Indicators"
+atrLen   = input.int(14, "ATR length",       group = grpInd)
+rsiLen   = input.int(14, "RSI length",       group = grpInd)
+volMaLen = input.int(50, "Volume MA length", group = grpInd)
+
+grpViz = "Display"
+showTable   = input.bool(true, "Show status table",                 group = grpViz)
+showChannel = input.bool(true, "Show extrapolated channel top",     group = grpViz)
+showZones   = input.bool(true, "Color background by state",         group = grpViz)
+showLevels  = input.bool(true, "Show blow-off peak / drop low",     group = grpViz)
+
+// ─── Base indicators ────────────────────────────────────────────────────────
+atrV  = ta.atr(atrLen)
+rsiV  = ta.rsi(close, rsiLen)
+volSd = ta.stdev(volume, volMaLen)
+volZ  = volSd > 0 ? (volume - ta.sma(volume, volMaLen)) / volSd : 0.0
+
+ready = bar_index >= math.max(trendLookback, math.max(chLookback, volMaLen))
+
+// ─── Criterion #1 — massive uptrend without real pullbacks ─────────────────
+trendSlope = ta.linreg(close, trendLookback, 0) - ta.linreg(close, trendLookback, 1)
+corrTrend  = ta.correlation(close, bar_index, trendLookback)
+r2         = corrTrend * corrTrend
+
+// Anchor the trend at the lowest low preceding the highest high in the window.
+// Ago-index convention: 0 = current bar, trendLookback-1 = oldest bar.
+int   peakAgo  = 0
+float peakHigh = high
+int   startAgo = 0
+float startLow = low
+float maxRetrace = 0.0
+if ready
+    for i = 0 to trendLookback - 1
+        if high[i] >= peakHigh   // >= keeps the OLDEST equal high, like np.argmax
+            peakHigh := high[i]
+            peakAgo  := i
+    startAgo := peakAgo
+    startLow := low[peakAgo]
+    for i = peakAgo to trendLookback - 1
+        if low[i] <= startLow
+            startLow := low[i]
+            startAgo := i
+    // Deepest walk-forward retracement, only measured once the advance > 3 ATR
+    float runHigh = startLow
+    for j = 0 to startAgo
+        i = startAgo - j
+        runHigh := math.max(runHigh, high[i])
+        rng = runHigh - startLow
+        if rng > 3 * atrV
+            maxRetrace := math.max(maxRetrace, (runHigh - low[i]) / rng)
+
+advance = peakHigh - startLow
+gainAtr = atrV > 0 ? advance / atrV : 0.0
+gainPct = startLow > 0 ? advance / startLow : 0.0
+
+trendOk = ready and trendSlope > 0 and r2 >= minR2 and gainAtr >= minGainAtr and gainPct * 100 >= minGainPct and maxRetrace < maxRetrIn
+
+// ─── Climax — parabolic extension above the staircase channel ──────────────
+// Fit the channel on the staircase EXCLUDING the last accelLen (possibly
+// parabolic) bars, then extrapolate the upper line to "now".
+bodyLen = math.max(chLookback - accelLen, 2)
+float chSlope  = 0.0
+float upperNow = na
+if ready
+    float sx  = 0.0
+    float sy  = 0.0
+    float sxy = 0.0
+    float sxx = 0.0
+    for x = 0 to bodyLen - 1
+        a = chLookback - 1 - x   // x=0 is the oldest body bar
+        y = close[a]
+        sx  += x
+        sy  += y
+        sxy += x * y
+        sxx += x * x
+    n = float(bodyLen)
+    denom = n * sxx - sx * sx
+    chSlope := denom != 0 ? (n * sxy - sx * sy) / denom : 0.0
+    chInt = (sy - chSlope * sx) / n
+    float maxResid = -1e18
+    for x = 0 to bodyLen - 1
+        a = chLookback - 1 - x
+        maxResid := math.max(maxResid, close[a] - (chSlope * x + chInt))
+    upperNow := chSlope * (chLookback - 1) + chInt + maxResid
+
+localSlope = ta.linreg(close, accelLen, 0) - ta.linreg(close, accelLen, 1)
+float accelVal = chSlope != 0 ? localSlope / chSlope : na
+accelOk  = chSlope > 0 and not na(accelVal) and accelVal >= accelRatioIn
+aboveAtr = atrV > 0 and not na(upperNow) ? (close - upperNow) / atrV : 0.0
+volSpike = volZ >= climaxVolZ or volZ[1] >= climaxVolZ or volZ[2] >= climaxVolZ
+
+climaxOk = ready and accelOk and aboveAtr >= chBreakAtr and rsiV >= rsiClimaxIn and volSpike
+
+// ─── Criteria #2 + #4 — vicious drop on significant volume ─────────────────
+int   dPeakAgo = 0
+float dPeak    = high
+float dLow     = low
+bool  heavyDownVol = false
+if ready
+    for i = 0 to dropWindow - 1
+        if high[i] >= dPeak
+            dPeak    := high[i]
+            dPeakAgo := i
+    for i = 0 to dPeakAgo
+        dLow := math.min(dLow, low[i])
+        if close[i] < open[i] and volZ[i] >= downVolZ
+            heavyDownVol := true
+
+dropAtrVal = atrV > 0 ? (dPeak - dLow) / atrV : 0.0
+dropOk     = ready and dropAtrVal >= viciousAtr and heavyDownVol
+
+// ─── Criterion #3 — benchmark / broad market topping (reported only) ───────
+benchOn = benchSym != ""
+benchExpr() =>
+    belowEma   = close < ta.ema(close, benchEmaLen)
+    recentHigh = ta.highest(close, 20)
+    priorHigh  = ta.highest(close, 40)[20]
+    [belowEma, recentHigh < priorHigh]
+[bBelowEma, bLowerHigh] = request.security(benchOn ? benchSym : syminfo.tickerid, timeframe.period, benchExpr())
+benchTop = benchOn and (bBelowEma or bLowerHigh)
+
+// ─── Criterion #5 — weak counter-rally ─────────────────────────────────────
+bounceVolAvg = ta.sma(volZ, bounceMinBars)
+bWeakVol     = bounceVolAvg <= bounceVolZMax
+
+// ─── State machine (advances on confirmed bars only) ───────────────────────
+var string state     = "NEUTRAL"
+var float  dropPeakS = na
+var float  dropLowS  = na
+var int    bounceBars = 0
+var int    climaxBars = 0
+
+bool climaxFired  = false
+bool dropFired    = false
+bool confirmFired = false
+bool resetFired   = false
+string alertText  = na
+
+if ready and barstate.isconfirmed
+    if state == "NEUTRAL" or state == "UPTREND"
+        if trendOk and climaxOk
+            climaxBars := 0
+            state := "CLIMAX_WARNING"
+            climaxFired := true
+            alertText := "CLIMAX WARNING: parabolic push " + str.tostring(aboveAtr, "#.##")
+                 + " ATR above channel, RSI " + str.tostring(rsiV, "#.#")
+                 + ", accel x" + str.tostring(accelVal, "#.##")
+                 + ". Uptrend gain " + str.tostring(gainAtr, "#.#")
+                 + " ATR, max retrace " + str.tostring(maxRetrace, "#.###") + "."
+        else
+            state := trendOk ? "UPTREND" : "NEUTRAL"
+
+    else if state == "CLIMAX_WARNING"
+        climaxBars += 1
+        if dropOk
+            dropPeakS := dPeak
+            dropLowS  := dLow
+            bounceBars := 0
+            state := "VICIOUS_DROP"
+            dropFired := true
+            alertText := "VICIOUS DROP: " + str.tostring(dropAtrVal, "#.##")
+                 + " ATR off the peak on heavy volume (criteria #2+#4)."
+                 + (benchTop ? " Benchmark also topping." : "")
+                 + " Watching the counter-rally."
+        else if climaxOk
+            climaxBars := 0   // climax still hot, keep the clock fresh
+        else if climaxBars > climaxGrace
+            state := "NEUTRAL"   // climax cooled off, no vicious drop -> stand down
+
+    else if state == "VICIOUS_DROP" or state == "BOUNCE_WATCH"
+        // Track the extremes while the drop / bounce evolves
+        dropPeakS := math.max(nz(dropPeakS, dPeak), dPeak)
+        dropLowS  := math.min(nz(dropLowS, dLow), dLow)
+        bounceBars += 1
+        bRng     = dropPeakS - dropLowS
+        bRetrace = bRng > 0 ? (close - dropLowS) / bRng : 0.0
+        bOk      = close > dropLowS and bRetrace < maxBounceRetr and bWeakVol
+        bFailed  = bRetrace >= failedRetr
+        if bFailed
+            state := "NEUTRAL"
+            resetFired := true
+            alertText := "RESET: price reclaimed " + str.tostring(failedRetr * 100, "#")
+                 + "% of the drop — not a blow-off top (the 'grind higher and make new highs' trap)."
+            dropPeakS := na
+            dropLowS  := na
+        else if bounceBars > bounceTimeout
+            state := "NEUTRAL"
+            dropPeakS := na
+            dropLowS  := na
+        else if bOk and bounceBars >= bounceMinBars
+            state := "CONFIRMED"
+            confirmFired := true
+            alertText := "BLOW-OFF TOP CONFIRMED (5/5): weak counter-rally (retrace "
+                 + str.tostring(bRetrace, "#.###") + ", low volume), benchmark topping: "
+                 + (benchTop ? "yes" : "no/unknown") + ". Peak "
+                 + str.tostring(dropPeakS, format.mintick) + " -> low "
+                 + str.tostring(dropLowS, format.mintick) + "."
+        else
+            state := "BOUNCE_WATCH"
+
+    else if state == "CONFIRMED"
+        // Stay confirmed until structure invalidates, then re-arm
+        cRng = dropPeakS - dropLowS
+        if cRng > 0 and (close - dropLowS) / cRng >= failedRetr
+            state := "NEUTRAL"
+            resetFired := true
+            dropPeakS := na
+            dropLowS  := na
+
+if not na(alertText)
+    alert("[" + syminfo.ticker + "] " + alertText, alert.freq_once_per_bar)
+
+// ─── Alerts (static messages, for single-condition alert setups) ───────────
+alertcondition(climaxFired,  "1 · Climax warning",     "Blowoff Watch: CLIMAX WARNING — parabolic push above the channel on euphoric volume")
+alertcondition(dropFired,    "2 · Vicious drop",       "Blowoff Watch: VICIOUS DROP — multi-ATR fall on heavy volume (criteria #2+#4)")
+alertcondition(confirmFired, "3 · Blow-off confirmed", "Blowoff Watch: BLOW-OFF TOP CONFIRMED (5/5) — weak counter-rally")
+alertcondition(resetFired,   "4 · Pattern reset",      "Blowoff Watch: pattern invalidated — price reclaimed the drop")
+
+// ─── Visuals ────────────────────────────────────────────────────────────────
+stateColor = state == "UPTREND"        ? color.new(color.teal,   88) :
+     state == "CLIMAX_WARNING" ? color.new(color.orange, 78) :
+     state == "VICIOUS_DROP"   ? color.new(color.red,    75) :
+     state == "BOUNCE_WATCH"   ? color.new(color.purple, 80) :
+     state == "CONFIRMED"      ? color.new(color.red,    60) : color(na)
+bgcolor(showZones ? stateColor : na, title = "State zone")
+
+inTrendPhase = state == "UPTREND" or state == "CLIMAX_WARNING"
+plot(showChannel and inTrendPhase ? upperNow : na, "Extrapolated channel top",
+     color = color.new(color.orange, 20), style = plot.style_linebr, linewidth = 1)
+
+inDropPhase = state == "VICIOUS_DROP" or state == "BOUNCE_WATCH" or state == "CONFIRMED"
+plot(showLevels and inDropPhase ? dropPeakS : na, "Blow-off peak",
+     color = color.new(color.red, 25), style = plot.style_linebr, linewidth = 2)
+plot(showLevels and inDropPhase ? dropLowS : na, "Drop low",
+     color = color.new(color.green, 25), style = plot.style_linebr, linewidth = 2)
+
+if climaxFired
+    label.new(bar_index, high, "⚠ CLIMAX", style = label.style_label_down,
+         color = color.orange, textcolor = color.black, size = size.small)
+if dropFired
+    label.new(bar_index, high, "VICIOUS\nDROP", style = label.style_label_down,
+         color = color.red, textcolor = color.white, size = size.small)
+if confirmFired
+    label.new(bar_index, low, "BLOW-OFF TOP\nCONFIRMED 5/5", style = label.style_label_up,
+         color = color.maroon, textcolor = color.white, size = size.normal)
+if resetFired
+    label.new(bar_index, low, "reset", style = label.style_label_up,
+         color = color.gray, textcolor = color.white, size = size.tiny)
+
+// ─── Status table ───────────────────────────────────────────────────────────
+f_mark(bool ok) => ok ? "✓" : "✗"
+f_markColor(bool ok) => ok ? color.new(color.green, 0) : color.new(color.gray, 30)
+
+var table t = table.new(position.top_right, 2, 7, bgcolor = color.new(color.black, 15),
+     border_width = 1, border_color = color.new(color.gray, 70))
+if showTable and barstate.islast
+    stateCol = state == "CONFIRMED" ? color.red : state == "NEUTRAL" ? color.gray : color.orange
+    table.cell(t, 0, 0, "Blowoff Watch", text_color = color.white, text_size = size.small)
+    table.cell(t, 1, 0, state, text_color = stateCol, text_size = size.small)
+    table.cell(t, 0, 1, f_mark(trendOk) + " #1 uptrend", text_color = f_markColor(trendOk), text_size = size.tiny)
+    table.cell(t, 1, 1, str.tostring(gainAtr, "#.#") + " ATR · R² " + str.tostring(r2, "#.##")
+         + " · retr " + str.tostring(maxRetrace, "#.##"), text_color = color.silver, text_size = size.tiny)
+    table.cell(t, 0, 2, f_mark(climaxOk) + " climax", text_color = f_markColor(climaxOk), text_size = size.tiny)
+    table.cell(t, 1, 2, "accel x" + str.tostring(accelVal, "#.#") + " · " + str.tostring(aboveAtr, "#.#")
+         + " ATR above · RSI " + str.tostring(rsiV, "#.#"), text_color = color.silver, text_size = size.tiny)
+    table.cell(t, 0, 3, f_mark(dropOk) + " #2+#4 drop", text_color = f_markColor(dropOk), text_size = size.tiny)
+    table.cell(t, 1, 3, str.tostring(dropAtrVal, "#.#") + " ATR · heavy vol " + f_mark(heavyDownVol),
+         text_color = color.silver, text_size = size.tiny)
+    table.cell(t, 0, 4, (benchOn ? f_mark(benchTop) : "–") + " #3 market", text_color = benchOn ? f_markColor(benchTop) : color.gray, text_size = size.tiny)
+    table.cell(t, 1, 4, benchOn ? ("below EMA " + f_mark(bBelowEma) + " · lower high " + f_mark(bLowerHigh)) : "no benchmark",
+         text_color = color.silver, text_size = size.tiny)
+    bRngT = dropPeakS - dropLowS
+    bRetT = not na(bRngT) and bRngT > 0 ? (close - dropLowS) / bRngT : na
+    table.cell(t, 0, 5, "#5 bounce", text_color = color.gray, text_size = size.tiny)
+    table.cell(t, 1, 5, na(bRetT) ? "–" : ("retrace " + str.tostring(bRetT, "#.##") + " · weak vol " + f_mark(bWeakVol)),
+         text_color = color.silver, text_size = size.tiny)
+    table.cell(t, 0, 6, "vol z", text_color = color.gray, text_size = size.tiny)
+    table.cell(t, 1, 6, str.tostring(volZ, "#.##"), text_color = color.silver, text_size = size.tiny)
