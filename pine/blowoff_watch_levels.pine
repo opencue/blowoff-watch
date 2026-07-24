@@ -15,7 +15,9 @@
 //
 // Optional "scenario ghost": a dashed template of how the pattern typically
 // plays out from the current state, projected forward. NOT a forecast — a
-// map of the sequence and where the next decision levels sit.
+// map of the sequence and where the next decision levels sit. A red "bear
+// twin" shows the DOWN path: in UPTREND the no-climax rollover to the level
+// where criterion #1 dies; in CLIMAX the top-already-in drop completion.
 //
 // The state machine advances on CONFIRMED bars only — no intrabar repaint.
 // Alerts: one "Any alert() function call" alert gets dynamic messages at every
@@ -32,7 +34,7 @@ grpT = "#1 Uptrend"
 trendLen      = input.int(300,    "Trend lookback (bars)",       minval = 60, maxval = 480, group = grpT)
 minGainATR    = input.float(8.0,  "Min advance (ATR)",           group = grpT)
 minGainPct    = input.float(0.0,  "Min advance (%, 100 = +100%)", minval = 0, group = grpT)
-maxRetrIn     = input.float(0.786, "Max retracement",            group = grpT, step = 0.01)
+maxRetrIn     = input.float(0.786, "Max retracement",            group = grpT, step = 0.01, minval = 0.5, maxval = 1.0)
 minR2         = input.float(0.70, "Min regression R²",           group = grpT, step = 0.01)
 
 grpC = "Climax"
@@ -109,9 +111,9 @@ f_uptrend() =>
     r2 = math.pow(ta.correlation(close, bar_index, trendLen), 2)
     slopeOk = ta.linreg(close, trendLen, 0) > ta.linreg(close, trendLen, 1)
     ok = slopeOk and r2 >= minR2 and gainATR >= minGainATR and gainPct * 100 >= minGainPct and maxRetr < maxRetrIn
-    [ok, gainATR, maxRetr]
+    [ok, gainATR, maxRetr, hiVal, loVal]
 
-[trendOk, trendGain, trendRetr] = f_uptrend()
+[trendOk, trendGain, trendRetr, trendHi, trendLo] = f_uptrend()
 
 // ---------------------------------------------------------------- climax + projected channel
 
@@ -354,17 +356,22 @@ if barstate.islast
 
 grpP = "Scenario projection"
 showGhost = input.bool(true, "Draw pattern scenario forward", group = grpP)
+showBear  = input.bool(true, "Also draw breakdown scenario (bear)", group = grpP)
 ghostBars = input.int(100, "Projection horizon (bars)", minval = 20, maxval = 400, group = grpP)
 
 f_pt(int off, float p) =>
     chart.point.from_index(bar_index + off, p)
 
-var polyline ghost    = na
-var label    ghostLbl = na
+var polyline ghost        = na
+var label    ghostLbl     = na
+var polyline ghostBear    = na
+var label    ghostBearLbl = na
 
 if barstate.islast
     polyline.delete(ghost)
     label.delete(ghostLbl)
+    polyline.delete(ghostBear)
+    label.delete(ghostBearLbl)
     if showGhost and ready
         pts = array.new<chart.point>()
         array.push(pts, f_pt(0, close))
@@ -405,6 +412,36 @@ if barstate.islast
             ghost := polyline.new(pts, curved = true, closed = false, line_color = color.new(color.gray, 30), line_style = line.style_dashed, line_width = 2)
             lastP = array.get(pts, array.size(pts) - 1)
             ghostLbl := label.new(bar_index + ghostBars, lastP.price, "pattern scenario\n(template, not a forecast)", style = label.style_label_left, color = color.new(color.gray, 75), textcolor = color.silver, size = size.small)
+    // Bear twin: what the DOWN path from here means for the pattern.
+    if showBear and ready and (state == 1 or state == 2)
+        adv = trendHi - trendLo
+        if adv > 0
+            failLevel = trendHi - maxRetrIn * adv   // pullback this deep kills criterion #1
+            halfLevel = trendHi - 0.5 * adv
+            pts2 = array.new<chart.point>()
+            array.push(pts2, f_pt(0, close))
+            if state == 1
+                // no climax, just a rollover: slide to the 50% retrace of the
+                // anchored advance, then to the disqualification level
+                y1 = math.min(close - 0.5 * atr, halfLevel + 0.15 * adv)
+                y2 = math.min(y1, halfLevel)
+                y3 = math.min(y2, failLevel)
+                array.push(pts2, f_pt(math.round(ghostBars * 0.35), y1))
+                array.push(pts2, f_pt(math.round(ghostBars * 0.60), y2))
+                array.push(pts2, f_pt(math.round(ghostBars * 0.90), y3))
+                array.push(pts2, f_pt(ghostBars, y3 - 0.5 * atr))
+            else
+                // climax armed but no more upside: the top is already in,
+                // the vicious drop completes from the rolling peak
+                loP2 = dropPk - dropATRIn * 1.2 * atr
+                array.push(pts2, f_pt(math.round(ghostBars * 0.25), loP2))
+                array.push(pts2, f_pt(math.round(ghostBars * 0.50), loP2 + maxBounce * 0.9 * (dropPk - loP2)))
+                array.push(pts2, f_pt(ghostBars, loP2 - 0.5 * atr))
+            if array.size(pts2) > 1
+                ghostBear := polyline.new(pts2, curved = true, closed = false, line_color = color.new(color.red, 45), line_style = line.style_dashed, line_width = 2)
+                lastB = array.get(pts2, array.size(pts2) - 1)
+                bearTxt = state == 1 ? "breakdown scenario\n(#1 trend dies below " + str.tostring(failLevel, format.mintick) + ")" : "top-already-in scenario\n(vicious drop completes from the peak)"
+                ghostBearLbl := label.new(bar_index + ghostBars, lastB.price, bearTxt, style = label.style_label_left, color = color.new(color.red, 80), textcolor = color.new(color.red, 10), size = size.small)
 
 // ---------------------------------------------------------------- alerts
 
