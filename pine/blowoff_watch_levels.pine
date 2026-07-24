@@ -159,7 +159,13 @@ localSlope = ta.linreg(close, accelLen, 0) - ta.linreg(close, accelLen, 1)
 accelRatio = chSlope != 0 ? localSlope / chSlope : 0.0
 aboveATR   = atr > 0 ? (close - upperNow) / atr : 0.0
 
-climaxOk = chSlope > 0 and accelRatio >= accelRatioIn and aboveATR >= chBreakATR and rsi >= rsiClimax and (volZ >= volZClimax or volZ[1] >= volZClimax or volZ[2] >= volZClimax)
+// single source of truth for the four climax conditions: the trigger AND the
+// proximity counter both read these — they can never drift apart
+accelCondOk = chSlope > 0 and accelRatio >= accelRatioIn
+breakCondOk = aboveATR >= chBreakATR
+rsiCondOk   = rsi >= rsiClimax
+volCondOk   = volZ >= volZClimax or volZ[1] >= volZClimax or volZ[2] >= volZClimax
+climaxOk    = accelCondOk and breakCondOk and rsiCondOk and volCondOk
 
 // ---------------------------------------------------------------- anticipation: proximity + ripeness
 // Graded EARLY-WARNING layer between the states. Proximity counts how many
@@ -169,11 +175,7 @@ climaxOk = chSlope > 0 and accelRatio >= accelRatioIn and aboveATR >= chBreakATR
 // parabola deceleration — and fires PRE-DROP above the threshold.
 // Risk meters, NOT entry signals: blow-offs love one more squeeze.
 
-accelCondOk = chSlope > 0 and accelRatio >= accelRatioIn
-breakCondOk = aboveATR >= chBreakATR
-rsiCondOk   = rsi >= rsiClimax
-volCondOk   = volZ >= volZClimax or volZ[1] >= volZClimax or volZ[2] >= volZClimax
-climaxProx  = (accelCondOk ? 1 : 0) + (breakCondOk ? 1 : 0) + (rsiCondOk ? 1 : 0) + (volCondOk ? 1 : 0)
+climaxProx = (accelCondOk ? 1 : 0) + (breakCondOk ? 1 : 0) + (rsiCondOk ? 1 : 0) + (volCondOk ? 1 : 0)
 
 // bearish divergence: newer 6-bar segment makes a higher price high on a lower RSI high  (25)
 segHiNow  = ta.highest(high, 6)
