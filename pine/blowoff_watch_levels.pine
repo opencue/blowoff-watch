@@ -24,6 +24,11 @@
 // annotated with what a close ABOVE (↑) or BELOW (↓) it means, plus swing
 // supports/resistance and unfilled-gap magnet zones.
 //
+// "Anticipation" layer: climax-proximity counter in UPTREND (small triangle
+// + alert at 3/4 conditions) and a top-ripeness score (0-100) in CLIMAX —
+// divergence, volume fade, over-stretch, wicks, parabola deceleration —
+// firing PRE-DROP above the threshold. Risk meters, not entry signals.
+//
 // The state machine advances on CONFIRMED bars only — no intrabar repaint.
 // Alerts: one "Any alert() function call" alert gets dynamic messages at every
 // stage, or use the four alertcondition() entries.
@@ -81,6 +86,10 @@ grpS = "Waves, supports, gaps"
 pivLen  = input.int(5,    "Swing pivot length",                minval = 2, maxval = 20, group = grpS)
 showSup = input.bool(true, "Show supports / resistance / gaps", group = grpS)
 gapScan = input.int(200,  "Gap scan (bars)",                   minval = 20, maxval = 480, group = grpS)
+
+grpA = "Anticipation (early warning)"
+showAnticip = input.bool(true, "Climax-proximity + ripeness signals", group = grpA)
+ripeWarn    = input.int(70,   "Pre-drop warning at ripeness ≥",       minval = 40, maxval = 95, group = grpA)
 
 grpI = "Indicators"
 atrLen   = input.int(14, "ATR length",       minval = 1, group = grpI)
@@ -150,7 +159,50 @@ localSlope = ta.linreg(close, accelLen, 0) - ta.linreg(close, accelLen, 1)
 accelRatio = chSlope != 0 ? localSlope / chSlope : 0.0
 aboveATR   = atr > 0 ? (close - upperNow) / atr : 0.0
 
-climaxOk = chSlope > 0 and accelRatio >= accelRatioIn and aboveATR >= chBreakATR and rsi >= rsiClimax and (volZ >= volZClimax or volZ[1] >= volZClimax or volZ[2] >= volZClimax)
+// single source of truth for the four climax conditions: the trigger AND the
+// proximity counter both read these — they can never drift apart
+accelCondOk = chSlope > 0 and accelRatio >= accelRatioIn
+breakCondOk = aboveATR >= chBreakATR
+rsiCondOk   = rsi >= rsiClimax
+volCondOk   = volZ >= volZClimax or volZ[1] >= volZClimax or volZ[2] >= volZClimax
+climaxOk    = accelCondOk and breakCondOk and rsiCondOk and volCondOk
+
+// ---------------------------------------------------------------- anticipation: proximity + ripeness
+// Graded EARLY-WARNING layer between the states. Proximity counts how many
+// climax conditions are already true while still in UPTREND ("climax near").
+// Ripeness (0-100) scores classic exhaustion tells while in CLIMAX_WARNING
+// — bearish RSI divergence, fading volume, over-stretch, upper wicks,
+// parabola deceleration — and fires PRE-DROP above the threshold.
+// Risk meters, NOT entry signals: blow-offs love one more squeeze.
+
+climaxProx = (accelCondOk ? 1 : 0) + (breakCondOk ? 1 : 0) + (rsiCondOk ? 1 : 0) + (volCondOk ? 1 : 0)
+
+// bearish divergence: newer 6-bar segment makes a higher price high on a lower RSI high  (25)
+segHiNow  = ta.highest(high, 6)
+segRsiNow = ta.highest(rsi, 6)
+bearDiv   = segHiNow > segHiNow[6] and segRsiNow < segRsiNow[6]
+
+// volume climax fading: the volume spike peaked bars ago and is now cut in half  (20)
+volPk    = ta.highest(volZ, 8)
+volPkOff = -ta.highestbars(volZ, 8)
+volFade  = volPkOff >= 3 and volPk > 1 and volZ < 0.5 * volPk
+
+// over-stretch above the channel, graded 0..1 (full marks at 3x the break requirement)  (20)
+stretch01 = math.min(math.max(aboveATR, 0) / math.max(chBreakATR * 3, 0.1), 1.0)
+
+// candle exhaustion near the highs: long upper wicks (12) + first close below prior low (8)
+winHi   = ta.highest(high, accelLen)
+upWick  = high - math.max(open, close)
+bodySz  = math.abs(close - open)
+wickBar = upWick > 1.5 * bodySz and winHi - high < 0.5 * atr
+wickAny = wickBar or wickBar[1] or wickBar[2]
+microLL = close < low[1]
+
+// parabola deceleration: local slope down to <60% of its recent peak  (15)
+slopePk   = ta.highest(localSlope, 8)
+slopeRoll = slopePk[1] > 0 and localSlope < 0.6 * slopePk[1]
+
+ripeness = (bearDiv ? 25 : 0) + (volFade ? 20 : 0) + math.round(20 * stretch01) + (wickAny ? 12 : 0) + (microLL ? 8 : 0) + (slopeRoll ? 15 : 0)
 
 // ---------------------------------------------------------------- criteria #2+#4
 
@@ -329,6 +381,25 @@ rearmed      = state == 0 and prevState == 5
 // current bounce retrace for display (na when no active structure)
 dispRetr = not na(pk) and pk != lo ? (close - lo) / (pk - lo) : na
 
+// anticipation firing: edge-triggered once per episode, confirmed bars only,
+// reads state AFTER the machine ran — never writes machine state
+var bool nearDone    = false
+var bool preDropDone = false
+bool climaxNear = false
+bool preDrop    = false
+if barstate.isconfirmed
+    if state != 2
+        preDropDone := false
+    if state != 1 or climaxProx < 3
+        nearDone := false
+    if ready and showAnticip
+        if state == 1 and climaxProx >= 3 and not nearDone
+            climaxNear := true
+            nearDone := true
+        if state == 2 and ripeness >= ripeWarn and not preDropDone
+            preDrop := true
+            preDropDone := true
+
 // ---------------------------------------------------------------- drawing
 
 // Projected channel + climax trigger line, extended into the future.
@@ -418,14 +489,17 @@ if rearmed
     pkLab  := na
     loLab  := na
 
+plotshape(climaxNear,   title = "Climax near",      style = shape.triangleup, location = location.abovebar, color = color.new(color.orange, 45), size = size.tiny)
+plotshape(preDrop,      title = "Pre-drop warning", style = shape.diamond,    location = location.abovebar, color = color.new(color.red, 15),    size = size.small, text = "PRE-DROP")
 plotshape(newClimax,    title = "Climax",    style = shape.triangleup,   location = location.abovebar, color = color.orange, size = size.small, text = "CLIMAX")
 plotshape(newDrop,      title = "Drop",      style = shape.triangledown, location = location.abovebar, color = color.red,    size = size.small, text = "DROP")
 plotshape(newConfirmed, title = "Confirmed", style = shape.xcross,       location = location.abovebar, color = color.purple, size = size.normal, text = "BLOW-OFF 5/5")
 
-bgcolor(state == 1 ? color.new(color.teal, 94) : state == 2 ? color.new(color.orange, 88) : state == 3 or state == 4 ? color.new(color.red, 90) : state == 5 ? color.new(color.purple, 88) : na)
+// CLIMAX background deepens as ripeness climbs
+bgcolor(state == 1 ? color.new(color.teal, 94) : state == 2 ? color.new(color.orange, math.max(72, 88 - math.round(ripeness / 6))) : state == 3 or state == 4 ? color.new(color.red, 90) : state == 5 ? color.new(color.purple, 88) : na)
 
 // status table
-var table t = table.new(position.top_right, 2, 6, bgcolor = color.new(color.black, 15), border_width = 1, border_color = color.new(color.gray, 70))
+var table t = table.new(position.top_right, 2, 8, bgcolor = color.new(color.black, 15), border_width = 1, border_color = color.new(color.gray, 70))
 if barstate.islast
     stTxt = state == 0 ? "NEUTRAL" : state == 1 ? "UPTREND" : state == 2 ? "CLIMAX ⚠" : state == 3 ? "VICIOUS DROP" : state == 4 ? "BOUNCE WATCH" : "CONFIRMED 5/5"
     stCol = state == 5 ? color.purple : state >= 2 ? color.orange : state == 1 ? color.teal : color.gray
@@ -441,6 +515,10 @@ if barstate.islast
     table.cell(t, 1, 4, useBench ? (benchTopping ? "topping ✔" : "healthy") : "off", text_color = color.silver, text_size = size.tiny)
     table.cell(t, 0, 5, "#5 bounce", text_color = color.gray, text_size = size.tiny)
     table.cell(t, 1, 5, na(dispRetr) ? "-" : "retr " + str.tostring(dispRetr, "#.##") + (weakVol ? " weak vol" : ""), text_color = color.silver, text_size = size.tiny)
+    table.cell(t, 0, 6, "proximity", text_color = color.gray, text_size = size.tiny)
+    table.cell(t, 1, 6, state == 1 ? str.tostring(climaxProx) + "/4 climax conds" : "-", text_color = climaxProx >= 3 and state == 1 ? color.orange : color.silver, text_size = size.tiny)
+    table.cell(t, 0, 7, "ripeness", text_color = color.gray, text_size = size.tiny)
+    table.cell(t, 1, 7, state == 1 or state == 2 ? str.tostring(ripeness) + "/100" + (state == 2 and ripeness >= ripeWarn ? " ⚠" : "") : "-", text_color = state == 2 and ripeness >= ripeWarn ? color.red : color.silver, text_size = size.tiny)
 
 // ---------------------------------------------------------------- break-watch levels
 // State-aware decision levels on the right edge: each annotated with what a
@@ -618,6 +696,10 @@ if barstate.islast
 // ---------------------------------------------------------------- alerts
 
 // Dynamic messages: create ONE alert with "Any alert() function call"
+if climaxNear
+    alert("[" + syminfo.ticker + "] CLIMAX NEAR: " + str.tostring(climaxProx) + "/4 climax conditions met in UPTREND — parabolic trigger sits at " + str.tostring(upperNow + chBreakATR * atr, format.mintick) + ".", alert.freq_once_per_bar)
+if preDrop
+    alert("[" + syminfo.ticker + "] PRE-DROP WARNING: top ripeness " + str.tostring(ripeness) + "/100 (div " + (bearDiv ? "✔" : "·") + " · vol-fade " + (volFade ? "✔" : "·") + " · stretch " + str.tostring(math.round(20 * stretch01)) + "/20 · wicks " + (wickAny ? "✔" : "·") + " · slope-roll " + (slopeRoll ? "✔" : "·") + ") — climax exhausting, drop risk elevated. NOT an entry signal.", alert.freq_once_per_bar)
 if newClimax
     alert("[" + syminfo.ticker + "] CLIMAX WARNING: parabolic push " + str.tostring(aboveATR, "#.##") + " ATR above channel, RSI " + str.tostring(rsi, "#.#") + ", accel x" + str.tostring(accelRatio, "#.##") + ". Uptrend gain " + str.tostring(trendGain, "#.#") + " ATR, max retrace " + str.tostring(trendRetr, "#.###") + ".", alert.freq_once_per_bar)
 if newDrop
@@ -628,6 +710,8 @@ if reclaimReset
     alert("[" + syminfo.ticker + "] RESET: " + (rearmed ? "confirmed pattern re-armed — structure reclaimed" : "price reclaimed the drop — not a blow-off top (the 'grind higher' trap)") + ".", alert.freq_once_per_bar)
 
 // Static alertcondition entries (single-stage alert setups)
+alertcondition(climaxNear,   "Blowoff: CLIMAX NEAR",      "3/4 climax conditions met — parabolic phase approaching")
+alertcondition(preDrop,      "Blowoff: PRE-DROP WARNING", "Top ripeness above threshold — climax exhausting, drop risk elevated")
 alertcondition(newClimax,    "Blowoff: CLIMAX WARNING", "Parabolic climax above channel — blow-off top forming?")
 alertcondition(newDrop,      "Blowoff: VICIOUS DROP",   "Vicious drop on heavy volume — watching the counter-rally")
 alertcondition(newConfirmed, "Blowoff: CONFIRMED 5/5",  "Blow-off top confirmed: weak counter-rally")
