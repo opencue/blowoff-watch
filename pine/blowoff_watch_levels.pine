@@ -34,7 +34,7 @@ grpT = "#1 Uptrend"
 trendLen      = input.int(300,    "Trend lookback (bars)",       minval = 60, maxval = 480, group = grpT)
 minGainATR    = input.float(8.0,  "Min advance (ATR)",           group = grpT)
 minGainPct    = input.float(0.0,  "Min advance (%, 100 = +100%)", minval = 0, group = grpT)
-maxRetrIn     = input.float(0.786, "Max retracement",            group = grpT, step = 0.01)
+maxRetrIn     = input.float(0.786, "Max retracement",            group = grpT, step = 0.01, minval = 0.5, maxval = 1.0)
 minR2         = input.float(0.70, "Min regression R²",           group = grpT, step = 0.01)
 
 grpC = "Climax"
