@@ -38,7 +38,7 @@ Two Pine Script v6 ports of the same state machine live in [`pine/`](pine/) — 
 | Script | What it draws |
 |---|---|
 | [`blowoff_watch.pine`](pine/blowoff_watch.pine) | **zones edition** — background state zones (teal uptrend → orange climax → red drop → purple bounce-watch → deep red confirmed), transition labels, extrapolated channel top, full 5-criteria status table |
-| [`blowoff_watch_levels.pine`](pine/blowoff_watch_levels.pine) | **levels edition** — forward-projected regression channel + dashed **climax trigger line** *before* the top, then TOP / LOW labels plus the **weak-bounce ceiling** (*Max bounce retrace*, default 50%) and **invalidation** (default 78.6%) retracement levels extended to the right. Levels track live as new extremes print; invalidated patterns are wiped, confirmed blow-offs stay as a frozen record (bounded by TradingView's drawing limit — oldest records are pruned) |
+| [`blowoff_watch_levels.pine`](pine/blowoff_watch_levels.pine) | **levels edition** — forward-projected regression channel + dashed **climax trigger line** *before* the top, then TOP / LOW labels plus the **weak-bounce ceiling** (*Max bounce retrace*, default 50%) and **invalidation** (default 78.6%) retracement levels extended to the right. Levels track live as new extremes print; invalidated patterns are wiped, confirmed blow-offs stay as a frozen record (bounded by TradingView's drawing limit — oldest records are pruned). Optional **scenario ghost**: a dashed curved template of how the pattern typically completes from the current state, projected forward (a map of the sequence, not a forecast) |
 
 Usage (both):
 

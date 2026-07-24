@@ -13,6 +13,10 @@
 // track the structure live as new extremes print. Invalidated patterns are
 // wiped off the chart; confirmed blow-offs stay as a frozen record.
 //
+// Optional "scenario ghost": a dashed template of how the pattern typically
+// plays out from the current state, projected forward. NOT a forecast — a
+// map of the sequence and where the next decision levels sit.
+//
 // The state machine advances on CONFIRMED bars only — no intrabar repaint.
 // Alerts: one "Any alert() function call" alert gets dynamic messages at every
 // stage, or use the four alertcondition() entries.
@@ -20,7 +24,7 @@
 // Not financial advice. Detection tool, not an entry button.
 
 //@version=6
-indicator("Blowoff Watch (levels)", overlay = true, max_lines_count = 60, max_labels_count = 60, max_bars_back = 500)
+indicator("Blowoff Watch (levels)", overlay = true, max_lines_count = 60, max_labels_count = 60, max_polylines_count = 10, max_bars_back = 500)
 
 // ---------------------------------------------------------------- inputs
 
@@ -341,6 +345,66 @@ if barstate.islast
     table.cell(t, 1, 4, useBench ? (benchTopping ? "topping ✔" : "healthy") : "off", text_color = color.silver, text_size = size.tiny)
     table.cell(t, 0, 5, "#5 bounce", text_color = color.gray, text_size = size.tiny)
     table.cell(t, 1, 5, na(dispRetr) ? "-" : "retr " + str.tostring(dispRetr, "#.##") + (weakVol ? " weak vol" : ""), text_color = color.silver, text_size = size.tiny)
+
+// ---------------------------------------------------------------- scenario ("ghost") projection
+// Projects the TEMPLATE of the blow-off pattern forward from the current
+// state. This is NOT a forecast — it shows how the pattern typically plays
+// out IF it completes, so you can see where you are in the sequence and
+// where the next decision levels sit.
+
+grpP = "Scenario projection"
+showGhost = input.bool(true, "Draw pattern scenario forward", group = grpP)
+ghostBars = input.int(100, "Projection horizon (bars)", minval = 20, maxval = 400, group = grpP)
+
+f_pt(int off, float p) =>
+    chart.point.from_index(bar_index + off, p)
+
+var polyline ghost    = na
+var label    ghostLbl = na
+
+if barstate.islast
+    polyline.delete(ghost)
+    label.delete(ghostLbl)
+    if showGhost and ready
+        pts = array.new<chart.point>()
+        array.push(pts, f_pt(0, close))
+        if state <= 1 and chSlope > 0
+            // full template: staircase -> parabolic -> vicious drop -> weak bounce -> fade
+            aEnd = math.round(ghostBars * 0.40)
+            array.push(pts, f_pt(aEnd, midNow + chSlope * aEnd + 0.3 * (upperNow - midNow)))
+            bEnd = math.round(ghostBars * 0.55)
+            pkP  = upperNow + chSlope * bEnd + (chBreakATR + 1.5) * atr
+            array.push(pts, f_pt(bEnd, pkP))
+            cEnd = math.round(ghostBars * 0.70)
+            loP  = pkP - dropATRIn * 1.2 * atr
+            array.push(pts, f_pt(cEnd, loP))
+            array.push(pts, f_pt(math.round(ghostBars * 0.85), loP + maxBounce * 0.9 * (pkP - loP)))
+            array.push(pts, f_pt(ghostBars, loP - 0.5 * atr))
+        else if state == 2
+            // climax already live: one more spike, then the drop template
+            bEnd = math.round(ghostBars * 0.20)
+            pkP  = math.max(close, upperNow) + 1.5 * atr
+            array.push(pts, f_pt(bEnd, pkP))
+            cEnd = math.round(ghostBars * 0.45)
+            loP  = pkP - dropATRIn * 1.2 * atr
+            array.push(pts, f_pt(cEnd, loP))
+            array.push(pts, f_pt(math.round(ghostBars * 0.70), loP + maxBounce * 0.9 * (pkP - loP)))
+            array.push(pts, f_pt(ghostBars, loP - 0.5 * atr))
+        else if state == 3 or state == 4
+            // drop happened: weak bounce toward the ceiling, then rollover
+            bounceCeil = lo + maxBounce * (pk - lo)
+            array.push(pts, f_pt(math.round(ghostBars * 0.35), math.min(bounceCeil, close + 1.5 * atr)))
+            array.push(pts, f_pt(math.round(ghostBars * 0.70), lo))
+            array.push(pts, f_pt(ghostBars, lo - 1.0 * atr))
+        else if state == 5
+            // confirmed: dead-cat fades, drift below the low
+            array.push(pts, f_pt(math.round(ghostBars * 0.30), close + 0.5 * atr))
+            array.push(pts, f_pt(math.round(ghostBars * 0.65), lo))
+            array.push(pts, f_pt(ghostBars, lo - 1.5 * atr))
+        if array.size(pts) > 1
+            ghost := polyline.new(pts, curved = true, closed = false, line_color = color.new(color.gray, 30), line_style = line.style_dashed, line_width = 2)
+            lastP = array.get(pts, array.size(pts) - 1)
+            ghostLbl := label.new(bar_index + ghostBars, lastP.price, "pattern scenario\n(template, not a forecast)", style = label.style_label_left, color = color.new(color.gray, 75), textcolor = color.silver, size = size.small)
 
 // ---------------------------------------------------------------- alerts
 
