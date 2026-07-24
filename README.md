@@ -33,15 +33,20 @@ Only when all stages fire in sequence do you get **BLOW-OFF TOP CONFIRMED (5/5)*
 
 ## TradingView — live on the chart
 
-[`pine/blowoff_watch.pine`](pine/blowoff_watch.pine) is a Pine Script v6 port of the same state machine, so you can watch the pattern develop live on any TradingView chart:
+Two Pine Script v6 ports of the same state machine live in [`pine/`](pine/) — pick one (or run both):
+
+| Script | What it draws |
+|---|---|
+| [`blowoff_watch.pine`](pine/blowoff_watch.pine) | **zones edition** — background state zones (teal uptrend → orange climax → red drop → purple bounce-watch → deep red confirmed), transition labels, extrapolated channel top, full 5-criteria status table |
+| [`blowoff_watch_levels.pine`](pine/blowoff_watch_levels.pine) | **levels edition** — forward-projected regression channel + dashed **climax trigger line** *before* the top, then TOP / LOW labels plus the **50%** (weak-bounce ceiling) and **78.6%** (invalidation) retracement levels extended to the right. Levels track live as new extremes print; invalidated patterns are wiped, confirmed blow-offs stay as a frozen record |
+
+Usage (both):
 
 1. Open TradingView → **Pine Editor** → paste the script → **Add to chart**.
-2. States paint as background zones (teal uptrend → orange climax → red drop → purple bounce-watch → deep red confirmed), transitions drop labels on the bar that fired, and the extrapolated channel top is drawn while the machine is armed.
-3. A status table (top right) shows all five criteria live with their current readings (gain in ATR, R², retracement, acceleration ratio, drop size, benchmark, bounce retrace).
-4. Set the benchmark for criterion #3 in the settings (e.g. `CME_MINI:ES1!` or `AMEX:SPY`).
-5. **Alerts**: create one alert on the indicator with *"Any alert() function call"* to get the full dynamic message at every stage transition, or use the four `alertcondition()` entries (climax warning / vicious drop / confirmed / reset) for single-stage alerts.
+2. Set the benchmark for criterion #3 in the settings (e.g. `CME_MINI:ES1!` or `AMEX:SPY`).
+3. **Alerts**: create one alert on the indicator with *"Any alert() function call"* to get the full dynamic message at every stage transition, or use the four `alertcondition()` entries (climax warning / vicious drop / confirmed / reset) for single-stage alerts.
 
-Notes: the Pine state machine advances on **confirmed bars only** — no intrabar repaint; what fired historically is what would have fired live. TradingView recomputes state from chart history on load, so there is no state file (the Python version persists state across restarts instead).
+Notes: both state machines advance on **confirmed bars only** — no intrabar repaint; what fired historically is what would have fired live. TradingView recomputes state from chart history on load, so there is no state file (the Python version persists state across restarts instead).
 
 ## Install (Python detector)
 
