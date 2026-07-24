@@ -16,7 +16,13 @@
 // Optional "scenario fan": three dashed templates per state — ① the pattern
 // path, ② the bullish alternative, ③ the bearish alternative — projected
 // forward. NOT forecasts: maps of where the scenarios diverge and where
-// the decision levels sit.
+// the decision levels sit. Downside paths stair-step at the chart's own
+// measured wave rhythm (swing-pivot leg size/duration), pausing at detected
+// support; endpoints carry ≈ETA stamps (continuous-bars assumption).
+//
+// "Break-watch" layer: state-aware decision levels on the right edge, each
+// annotated with what a close ABOVE (↑) or BELOW (↓) it means, plus swing
+// supports/resistance and unfilled-gap magnet zones.
 //
 // The state machine advances on CONFIRMED bars only — no intrabar repaint.
 // Alerts: one "Any alert() function call" alert gets dynamic messages at every
@@ -25,7 +31,7 @@
 // Not financial advice. Detection tool, not an entry button.
 
 //@version=6
-indicator("Blowoff Watch (levels)", overlay = true, max_lines_count = 60, max_labels_count = 60, max_polylines_count = 10, max_bars_back = 500)
+indicator("Blowoff Watch (levels)", overlay = true, max_lines_count = 80, max_labels_count = 80, max_polylines_count = 10, max_boxes_count = 12, max_bars_back = 500)
 
 // ---------------------------------------------------------------- inputs
 
@@ -66,6 +72,15 @@ grpV = "Drawing"
 showChannel   = input.bool(true, "Project channel + trigger line", group = grpV)
 projBars      = input.int(20,    "Project channel right (bars)",   minval = 0, maxval = 500, group = grpV)
 lvlBars       = input.int(40,    "Extend drop levels right (bars)", minval = 0, maxval = 500, group = grpV)
+
+grpW = "Break-watch levels"
+showWatch = input.bool(true, "Show break-watch annotations", group = grpW)
+watchBars = input.int(25,    "Watch labels offset (bars)",   minval = 5, maxval = 490, group = grpW)
+
+grpS = "Waves, supports, gaps"
+pivLen  = input.int(5,    "Swing pivot length",                minval = 2, maxval = 20, group = grpS)
+showSup = input.bool(true, "Show supports / resistance / gaps", group = grpS)
+gapScan = input.int(200,  "Gap scan (bars)",                   minval = 20, maxval = 480, group = grpS)
 
 grpI = "Indicators"
 atrLen   = input.int(14, "ATR length",       minval = 1, group = grpI)
@@ -164,6 +179,83 @@ f_drop() =>
 // bHi20 < bHi60 <=> the 60-bar high sits OUTSIDE the last 20 bars = lower high.
 [bClose, bEma, bHi20, bHi60] = request.security(useBench ? benchSym : syminfo.tickerid, timeframe.period, [close, ta.ema(close, benchEma), ta.highest(close, 20), ta.highest(close, 60)])
 benchTopping = useBench and (bClose < bEma or bHi20 < bHi60)
+
+// ---------------------------------------------------------------- waves, supports, gaps
+// Swing pivots give the chart's own wave rhythm (typical leg size/duration),
+// support/resistance memory, and ≈ETA math. Scenario paths and break-watch
+// labels build on these.
+
+trendFail = trendHi - maxRetrIn * (trendHi - trendLo)   // a pullback this deep kills #1
+
+ph = ta.pivothigh(high, pivLen, pivLen)
+pl = ta.pivotlow(low, pivLen, pivLen)
+var pivP = array.new<float>()   // alternating swing prices (chronological)
+var pivB = array.new<int>()
+var supP = array.new<float>()   // recent pivot lows  (support candidates)
+var resP = array.new<float>()   // recent pivot highs (resistance candidates)
+if barstate.isconfirmed
+    if not na(ph)
+        array.push(pivP, ph)
+        array.push(pivB, bar_index - pivLen)
+        array.push(resP, ph)
+        if array.size(resP) > 12
+            array.shift(resP)
+    if not na(pl)
+        array.push(pivP, pl)
+        array.push(pivB, bar_index - pivLen)
+        array.push(supP, pl)
+        if array.size(supP) > 12
+            array.shift(supP)
+    if array.size(pivP) > 16
+        array.shift(pivP)
+        array.shift(pivB)
+
+// typical wave leg measured from the last swings
+float avgWaveAmp  = na
+float avgWaveBars = na
+if array.size(pivP) >= 3
+    float sAmp  = 0.0
+    float sBars = 0.0
+    nLegs = array.size(pivP) - 1
+    for i = 1 to nLegs
+        sAmp  += math.abs(array.get(pivP, i) - array.get(pivP, i - 1))
+        sBars += array.get(pivB, i) - array.get(pivB, i - 1)
+    avgWaveAmp  := sAmp / nLegs
+    avgWaveBars := sBars / nLegs
+waveSpeed = not na(avgWaveAmp) and not na(avgWaveBars) and avgWaveBars > 0 ? avgWaveAmp / avgWaveBars : na
+
+// nearest supports below / resistance above current price (deduped by 0.5 ATR)
+float sup1 = na
+float sup2 = na
+float res1 = na
+if array.size(supP) > 0
+    for i = 0 to array.size(supP) - 1
+        v = array.get(supP, i)
+        if v < close
+            if na(sup1) or v > sup1
+                sup2 := sup1
+                sup1 := v
+            else if na(sup2) or v > sup2
+                sup2 := v
+if not na(sup1) and not na(sup2) and sup1 - sup2 < 0.5 * atr
+    sup2 := na
+if array.size(resP) > 0
+    for i = 0 to array.size(resP) - 1
+        v = array.get(resP, i)
+        if v > close and (na(res1) or v < res1)
+            res1 := v
+
+// ≈ETA assuming a continuous stream of bars (sessions/weekends push it later)
+f_eta(int offBars) =>
+    str.format_time(time_close + offBars * timeframe.in_seconds() * 1000, "MMM dd HH:mm", syminfo.timezone)
+
+f_etaTo(float y) =>   // ETA to a level at the measured wave speed
+    string out = ""
+    if not na(waveSpeed) and waveSpeed > 0
+        b = math.round(math.abs(y - close) / waveSpeed)
+        if b > 0 and b <= 480
+            out := " · ≈" + f_eta(b)
+    out
 
 // ---------------------------------------------------------------- state machine
 
@@ -347,6 +439,80 @@ if barstate.islast
     table.cell(t, 0, 5, "#5 bounce", text_color = color.gray, text_size = size.tiny)
     table.cell(t, 1, 5, na(dispRetr) ? "-" : "retr " + str.tostring(dispRetr, "#.##") + (weakVol ? " weak vol" : ""), text_color = color.silver, text_size = size.tiny)
 
+// ---------------------------------------------------------------- break-watch levels
+// State-aware decision levels on the right edge: each annotated with what a
+// close ABOVE (↑) or BELOW (↓) it means for the pattern, plus swing supports,
+// resistance and unfilled-gap magnet zones. Lines are drawn only where no
+// structure line exists yet; on DROP/BOUNCE/CONFIRMED the notes attach to
+// the already-drawn TOP / LOW / ceiling / invalidation levels.
+
+var watchLines = array.new<line>()
+var watchLbls  = array.new<label>()
+var gapBoxes   = array.new<box>()
+
+f_watch(float y, color col, string txt) =>
+    array.push(watchLines, line.new(bar_index - 3, y, bar_index + watchBars, y, color = color.new(col, 55), style = line.style_dotted))
+    array.push(watchLbls, label.new(bar_index + watchBars, y, txt, style = label.style_label_left, color = color.new(col, 82), textcolor = col, size = size.small))
+
+f_note(float y, color col, string txt) =>   // label only (line already exists)
+    array.push(watchLbls, label.new(bar_index + watchBars, y, txt, style = label.style_label_left, color = color.new(col, 82), textcolor = col, size = size.small))
+
+if barstate.islast
+    while array.size(watchLines) > 0
+        line.delete(array.pop(watchLines))
+    while array.size(watchLbls) > 0
+        label.delete(array.pop(watchLbls))
+    while array.size(gapBoxes) > 0
+        box.delete(array.pop(gapBoxes))
+    if showWatch and ready
+        if state == 1 and chSlope > 0
+            trigY = upperNow + chBreakATR * atr
+            f_note(trigY, color.orange, "↑ close here + RSI≥" + str.tostring(rsiClimax, "#") + " + vol spike = CLIMAX" + f_etaTo(trigY))
+            f_watch(midNow, color.gray, "↓ lose midline = momentum cooling")
+            f_watch(trendFail, color.maroon, "↓ close below = retrace > " + str.tostring(maxRetrIn * 100, "#.#") + "% — #1 dies, pattern OFF" + f_etaTo(trendFail))
+        else if state == 2
+            f_watch(dropPk + 0.25 * atr, color.teal, "↑ new high = squeeze still on — do NOT fade")
+            dropTrig = dropPk - dropATRIn * atr
+            f_watch(dropTrig, color.red, "↓ reach fast + heavy red vol = VICIOUS DROP trigger" + f_etaTo(dropTrig))
+            if chSlope > 0
+                f_watch(midNow, color.gray, "↓ back inside channel = climax fading (no drop)")
+        else if (state == 3 or state == 4) and not na(pk) and not na(lo)
+            f_note(pk, color.red, "↑ TOP break = full invalidation — squeeze risk")
+            f_note(lo + failRetr * (pk - lo), color.purple, "↑ close above = pattern INVALID (grind-higher trap)")
+            f_note(lo + maxBounce * (pk - lo), color.yellow, "bounce ceiling — weak vol below = confirms; ↑ above = bounce too strong")
+            f_note(lo, color.teal, "↓ LOW break = continuation down, no confirm needed" + f_etaTo(lo))
+        else if state == 5 and not na(pk) and not na(lo)
+            f_note(lo, color.teal, "↓ LOW break = capitulation leg")
+            f_note(lo + failRetr * (pk - lo), color.purple, "↑ close above = structure reclaimed — re-arm")
+    if showSup and ready
+        if not na(sup1)
+            f_watch(sup1, color.green, "support (swing low)" + f_etaTo(sup1))
+        if not na(sup2)
+            f_watch(sup2, color.green, "support 2 (swing low)")
+        if not na(res1)
+            f_watch(res1, color.new(color.red, 20), "resistance (swing high)" + f_etaTo(res1))
+        // unfilled gaps act as magnets; scan newest -> oldest, track fills
+        int found = 0
+        float minLowNewer  = 1e18
+        float maxHighNewer = -1e18
+        for i = 1 to gapScan
+            if found >= 3
+                break
+            gapUpTop = low[i - 1]
+            gapUpBot = high[i]
+            if gapUpTop > gapUpBot + syminfo.mintick and minLowNewer > gapUpBot
+                array.push(gapBoxes, box.new(bar_index - i, gapUpTop, bar_index + watchBars, gapUpBot, bgcolor = color.new(color.blue, 88), border_color = color.new(color.blue, 65), border_style = line.style_dotted))
+                f_note((gapUpTop + gapUpBot) / 2, color.new(color.blue, 10), "unfilled gap — magnet" + f_etaTo((gapUpTop + gapUpBot) / 2))
+                found += 1
+            gapDnTop = low[i]
+            gapDnBot = high[i - 1]
+            if gapDnTop > gapDnBot + syminfo.mintick and maxHighNewer < gapDnTop
+                array.push(gapBoxes, box.new(bar_index - i, gapDnTop, bar_index + watchBars, gapDnBot, bgcolor = color.new(color.blue, 88), border_color = color.new(color.blue, 65), border_style = line.style_dotted))
+                f_note((gapDnTop + gapDnBot) / 2, color.new(color.blue, 10), "unfilled gap — magnet" + f_etaTo((gapDnTop + gapDnBot) / 2))
+                found += 1
+            minLowNewer  := math.min(minLowNewer, low[i - 1])
+            maxHighNewer := math.max(maxHighNewer, high[i - 1])
+
 // ---------------------------------------------------------------- scenario ("fan") projection
 // Projects TEMPLATES of possible outcomes forward from the current state.
 // These are NOT forecasts — each path shows one typical way the situation
@@ -355,6 +521,7 @@ if barstate.islast
 
 grpP = "Scenario projection"
 showGhost = input.bool(true, "Draw scenario fan forward", group = grpP)
+showEta   = input.bool(true, "≈ETA stamps on scenario endpoints", group = grpP)
 ghostBars = input.int(100, "Projection horizon (bars)", minval = 20, maxval = 400, group = grpP)
 
 var ghosts    = array.new<polyline>()
@@ -368,8 +535,9 @@ f_scenario(array<float> fracs, array<float> prices, color col, string name) =>
         for i = 0 to array.size(fracs) - 1
             array.push(pts, chart.point.from_index(bar_index + math.round(ghostBars * array.get(fracs, i)), array.get(prices, i)))
         array.push(ghosts, polyline.new(pts, curved = true, closed = false, line_color = col, line_style = line.style_dashed, line_width = 2))
-        endP = array.get(prices, array.size(prices) - 1)
-        array.push(ghostLbls, label.new(bar_index + ghostBars, endP, name, style = label.style_label_left, color = color.new(col, 75), textcolor = col, size = size.small))
+        endOff = math.round(ghostBars * array.get(fracs, array.size(fracs) - 1))
+        endP   = array.get(prices, array.size(prices) - 1)
+        array.push(ghostLbls, label.new(bar_index + endOff, endP, name + (showEta ? "\n≈ " + f_eta(endOff) : ""), style = label.style_label_left, color = color.new(col, 75), textcolor = col, size = size.small))
 
 if barstate.islast
     while array.size(ghosts) > 0
@@ -387,15 +555,36 @@ if barstate.islast
             f_scenario(array.from(0.40, 0.55, 0.70, 0.85, 1.0), array.from(midNow + chSlope * ghostBars * 0.40 + 0.3 * (upperNow - midNow), pkP, loP, loP + maxBounce * 0.9 * (pkP - loP), loP - 0.5 * atr), cGrey, "① blow-off template")
             // ② orderly continuation: grinds along the channel, no climax
             f_scenario(array.from(0.33, 0.66, 1.0), array.from(midNow + chSlope * ghostBars * 0.33 - 0.5 * atr, midNow + chSlope * ghostBars * 0.66 + 0.5 * atr, midNow + chSlope * ghostBars), cBull, "② staircase continues")
-            // ③ breakdown: no climax, the pullback deepens until criterion #1 dies
-            adv = trendHi - trendLo
-            if adv > 0
-                failLevel = trendHi - maxRetrIn * adv
-                halfLevel = trendHi - 0.5 * adv
-                y1 = math.min(close - 0.5 * atr, halfLevel + 0.15 * adv)
-                y2 = math.min(y1, halfLevel)
-                y3 = math.min(y2, failLevel)
-                f_scenario(array.from(0.35, 0.60, 1.0), array.from(y1, y2, y3), cBear, "③ breakdown — #1 dies < " + str.tostring(failLevel, format.mintick))
+            // ③ stair-down breakdown at the chart's own wave rhythm: lower
+            // high / lower low legs, pausing once at the nearest support,
+            // until criterion #1 dies
+            span = close - trendFail
+            if span > 0
+                stepB = math.max(nz(avgWaveBars, 8.0), 4.0)
+                legA  = math.max(nz(avgWaveAmp, 2 * atr), atr)
+                fr = array.new<float>()
+                pr = array.new<float>()
+                float yv = close
+                float bb = 0.0
+                bool supUsed = false
+                for k = 0 to 9
+                    if yv <= trendFail or bb >= ghostBars
+                        break
+                    bb += stepB
+                    float dn = math.max(trendFail, yv - legA)
+                    if not supUsed and not na(sup1) and sup1 > trendFail and yv > sup1 and dn < sup1
+                        dn := sup1        // shelf at detected support on the way down
+                        supUsed := true
+                    yv := dn
+                    array.push(fr, math.min(bb / ghostBars, 1.0))
+                    array.push(pr, yv)
+                    if yv <= trendFail or bb >= ghostBars
+                        break
+                    bb += math.max(stepB * 0.6, 2.0)
+                    yv += 0.45 * legA     // counter-wave: lower high
+                    array.push(fr, math.min(bb / ghostBars, 1.0))
+                    array.push(pr, yv)
+                f_scenario(fr, pr, cBear, "③ stair-down — #1 dies < " + str.tostring(trendFail, format.mintick))
         else if state == 2
             pkP = math.max(close, upperNow) + 1.5 * atr
             loP = pkP - dropATRIn * 1.2 * atr
@@ -415,8 +604,8 @@ if barstate.islast
             // ③ base building at the low
             f_scenario(array.from(0.35, 0.70, 1.0), array.from(lo + 0.25 * (pk - lo), lo + 0.2 * (pk - lo), lo + 0.3 * (pk - lo)), cBear, "③ bases at the low")
         else if state == 5 and not na(pk) and not na(lo)
-            // ① dead-cat fades below the low
-            f_scenario(array.from(0.30, 0.65, 1.0), array.from(close + 0.5 * atr, lo, lo - 1.5 * atr), cGrey, "① dead-cat fades")
+            // ① dead-cat fades: small lower-high steps down through the LOW
+            f_scenario(array.from(0.20, 0.38, 0.55, 0.75, 1.0), array.from(close + 0.5 * atr, lo + 0.12 * (pk - lo), lo + 0.20 * (pk - lo), lo, lo - 1.5 * atr), cGrey, "① dead-cat fades")
             // ② reclaim -> invalidation
             f_scenario(array.from(0.45, 1.0), array.from(lo + 0.5 * (pk - lo), lo + failRetr * (pk - lo)), cBull, "② reclaims → invalid")
             // ③ sharper flush
